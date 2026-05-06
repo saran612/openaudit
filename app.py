@@ -17,6 +17,7 @@ from core import classifier
 from core import validator
 from core import anonymizer
 from sqlalchemy import create_engine, Column, String, DateTime, JSON, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from botocore.exceptions import ClientError
@@ -38,9 +39,44 @@ class DocumentMetadata(Base):
     meili_id = Column(String)
     missing_fields = Column(JSON)
     analysis_status = Column(String, default="pending")
-    analysis_result = Column(JSON, nullable=True)
+    analysis_result = Column(JSONB, nullable=True) # Use JSONB for filtering
     token_mapping = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+@app.get("/stats")
+async def get_stats():
+    db = SessionLocal()
+    try:
+        total = db.query(DocumentMetadata).count()
+        
+        # Today's count
+        today_start = datetime.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = db.query(DocumentMetadata).filter(DocumentMetadata.created_at >= today_start).count()
+        
+        # Breakdown by classification
+        # We use JSONB operators to query inside the analysis_result
+        death = db.query(DocumentMetadata).filter(DocumentMetadata.analysis_result['classification']['category'].astext == 'Death').count()
+        disability = db.query(DocumentMetadata).filter(DocumentMetadata.analysis_result['classification']['category'].astext == 'Disability').count()
+        hosp = db.query(DocumentMetadata).filter(DocumentMetadata.analysis_result['classification']['category'].astext == 'Hospitalisation').count()
+        
+        # Needs review (confidence < 0.6)
+        # Note: We cast to float for comparison
+        from sqlalchemy import cast, Float
+        needs_review = db.query(DocumentMetadata).filter(
+            cast(DocumentMetadata.analysis_result['classification']['confidence'].astext, Float) < 0.6
+        ).count()
+        
+        return {
+            "total": total,
+            "today": today,
+            "death": death,
+            "disability": disability,
+            "hospitalisation": hosp,
+            "needs_review": needs_review,
+            "duplicates": 0
+        }
+    finally:
+        db.close()
 
 class BatchAnalyzeRequest(BaseModel):
     doc_ids: List[str]
