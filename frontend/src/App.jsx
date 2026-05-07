@@ -109,12 +109,9 @@ export default function App() {
       {/* Sidebar */}
       <div className="w-64 border-r border-white/5 bg-[#0f1117] flex flex-col p-6 gap-8">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center text-[#0a0c10] shadow-lg shadow-white/5">
-            <Activity size={24} strokeWidth={2.5} />
-          </div>
+          
           <div>
             <h1 className="font-bold text-lg leading-tight tracking-tight">OpenAudit AI</h1>
-            <p className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Audit for CDSCO Adverse Event Reports</p>
           </div>
         </div>
 
@@ -162,7 +159,7 @@ export default function App() {
         {/* Top Bar */}
         <header className="h-20 border-b border-white/5 bg-[#0a0c10]/80 backdrop-blur-xl flex items-center justify-between px-8 shrink-0 z-10">
           <div>
-            <h2 className="text-xl font-bold tracking-tight">RegAI Dashboard</h2>
+            <h2 className="text-xl font-bold tracking-tight">OpenAudit AI Dashboard</h2>
             <p className="text-xs text-slate-500 font-medium">CDSCO adverse event analysis</p>
           </div>
           
@@ -415,7 +412,7 @@ function StatCard({ label, value, subValue, icon, color }) {
 
   return (
     <div className={cn(
-      "p-6 rounded-[2rem] border transition-all hover:scale-[1.02] relative group overflow-hidden",
+      "p-6 rounded-[10px] border transition-all hover:scale-[1.02] relative group overflow-hidden",
       colorStyles[color]
     )}>
       <div className="flex justify-between items-start mb-6">
@@ -430,12 +427,6 @@ function StatCard({ label, value, subValue, icon, color }) {
       <p className="text-[10px] font-bold mt-1 text-slate-600 group-hover:text-slate-500 transition-colors uppercase tracking-tight">
         {subValue}
       </p>
-      
-      {/* Subtle Glow */}
-      <div className={cn(
-        "absolute -bottom-4 -right-4 w-20 h-20 blur-[40px] opacity-0 group-hover:opacity-30 transition-opacity",
-        `bg-${color === 'white' ? 'slate' : color}-500`
-      )} />
     </div>
   );
 }
