@@ -42,10 +42,35 @@ export default function App() {
   const [filterType, setFilterType] = useState('All types');
   const [filterStatus, setFilterStatus] = useState('All status');
   const [selectedDoc, setSelectedDoc] = useState(null);
+  const [activeTab, setActiveTab] = useState('Dashboard');
+  const [duplicateIds, setDuplicateIds] = useState([]);
 
   useEffect(() => {
     fetchData();
   }, [searchQuery, filterType, filterStatus]);
+
+  const handleCheckDuplicates = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/duplicates`);
+      setDuplicateIds(res.data.duplicate_ids || []);
+      if (res.data.duplicate_ids?.length > 0) {
+        alert(`Found ${res.data.duplicate_ids.length} potentially duplicate documents.`);
+      } else {
+        alert("No duplicates found.");
+      }
+    } catch (error) {
+      console.error('Error checking duplicates:', error);
+    }
+  };
+
+  const handleSelectDoc = async (docId) => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/documents/${docId}`);
+      setSelectedDoc(res.data);
+    } catch (error) {
+      console.error('Error fetching doc details:', error);
+    }
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -94,10 +119,31 @@ export default function App() {
         </div>
 
         <nav className="flex flex-col gap-1">
-          <NavItem icon={<BarChart3 size={18} />} label="Dashboard" active />
-          <NavItem icon={<FileText size={18} />} label="Documents" />
-          <NavItem icon={<AlertCircle size={18} />} label="Reviews" count={stats.needs_review} />
-          <NavItem icon={<Users size={18} />} label="Team" />
+          <NavItem 
+            icon={<BarChart3 size={18} />} 
+            label="Dashboard" 
+            active={activeTab === 'Dashboard'} 
+            onClick={() => setActiveTab('Dashboard')}
+          />
+          <NavItem 
+            icon={<FileText size={18} />} 
+            label="Documents" 
+            active={activeTab === 'Documents'} 
+            onClick={() => setActiveTab('Documents')}
+          />
+          <NavItem 
+            icon={<AlertCircle size={18} />} 
+            label="Reviews" 
+            active={activeTab === 'Reviews'} 
+            onClick={() => setActiveTab('Reviews')}
+            count={stats.needs_review} 
+          />
+          <NavItem 
+            icon={<Users size={18} />} 
+            label="Team" 
+            active={activeTab === 'Team'} 
+            onClick={() => setActiveTab('Team')}
+          />
         </nav>
 
         <div className="mt-auto">
@@ -127,169 +173,121 @@ export default function App() {
           </label>
         </header>
 
-        {/* Dashboard Scroll Area */}
         <main className="flex-1 overflow-y-auto p-8 flex flex-col gap-8 custom-scrollbar">
-          {/* Stats Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-            <StatCard 
-              label="Total docs" 
-              value={stats.total} 
-              subValue={`${stats.today} today`} 
-              icon={<FileText size={16} />} 
-              color="white"
-            />
-            <StatCard 
-              label="Death cases" 
-              value={stats.death} 
-              subValue={`${Math.round((stats.death / (stats.total || 1)) * 100)}% of total`} 
-              icon={<AlertCircle size={16} />} 
-              color="red"
-            />
-            <StatCard 
-              label="Disability" 
-              value={stats.disability} 
-              subValue={`${Math.round((stats.disability / (stats.total || 1)) * 100)}% of total`} 
-              icon={<Activity size={16} />} 
-              color="orange"
-            />
-            <StatCard 
-              label="Hospitalisation" 
-              value={stats.hospitalisation} 
-              subValue={`${Math.round((stats.hospitalisation / (stats.total || 1)) * 100)}% of total`} 
-              icon={<Activity size={16} />} 
-              color="blue"
-            />
-            <StatCard 
-              label="Needs review" 
-              value={stats.needs_review} 
-              subValue="Low confidence" 
-              icon={<AlertCircle size={16} />} 
-              color="amber"
-            />
-            <StatCard 
-              label="Duplicates" 
-              value={stats.duplicates} 
-              subValue="Flagged" 
-              icon={<Copy size={16} />} 
-              color="slate"
-            />
-          </div>
-
-          {/* Search and Table Section */}
-          <div className="bg-[#0f1117] rounded-3xl border border-white/5 overflow-hidden flex flex-col shadow-2xl">
-            <div className="p-6 border-b border-white/5 flex flex-col md:flex-row gap-4 justify-between items-center bg-white/[0.02]">
-              <div className="relative flex-1 max-w-2xl w-full">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                <input 
-                  type="text" 
-                  placeholder="Search across all documents — drug name, patient ID, symptom..." 
-                  className="w-full pl-12 pr-4 py-3 bg-[#0a0c10] border border-white/5 rounded-2xl outline-none focus:ring-2 focus:ring-white/10 focus:border-white/20 transition-all text-sm font-medium"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-              </div>
-              <div className="flex gap-3 w-full md:w-auto">
-                <Select 
-                  value={filterType} 
-                  onChange={setFilterType} 
-                  options={['All types', 'Death', 'Disability', 'Hospitalisation', 'Other']} 
-                />
-                <Select 
-                  value={filterStatus} 
-                  onChange={setFilterStatus} 
-                  options={['All status', 'Clean', 'Flagged']} 
-                />
-              </div>
+          {activeTab === 'Dashboard' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+              <StatCard label="Total docs" value={stats.total} subValue={`${stats.today} today`} icon={<FileText size={16} />} color="white" />
+              <StatCard label="Death cases" value={stats.death} subValue={`${Math.round((stats.death / (stats.total || 1)) * 100)}% of total`} icon={<AlertCircle size={16} />} color="red" />
+              <StatCard label="Disability" value={stats.disability} subValue={`${Math.round((stats.disability / (stats.total || 1)) * 100)}% of total`} icon={<Activity size={16} />} color="orange" />
+              <StatCard label="Hospitalisation" value={stats.hospitalisation} subValue={`${Math.round((stats.hospitalisation / (stats.total || 1)) * 100)}% of total`} icon={<Activity size={16} />} color="blue" />
+              <StatCard label="Needs review" value={stats.needs_review} subValue="Low confidence" icon={<AlertCircle size={16} />} color="amber" />
+              <StatCard label="Duplicates" value={stats.duplicates} subValue="Flagged" icon={<Copy size={16} />} color="slate" />
             </div>
+          )}
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-white/[0.01] text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500 border-b border-white/5">
-                    <th className="px-8 py-5">Document</th>
-                    <th className="px-6 py-5 text-center">Classification</th>
-                    <th className="px-6 py-5 text-center">Confidence</th>
-                    <th className="px-6 py-5 text-center">Validation</th>
-                    <th className="px-8 py-5 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {loading && documents.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="py-24 text-center">
-                        <div className="flex flex-col items-center gap-4">
-                          <div className="relative">
-                            <Loader2 className="animate-spin text-white" size={32} />
-                            <div className="absolute inset-0 blur-lg bg-white/20 animate-pulse" />
-                          </div>
-                          <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Processing regulatory database...</p>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : documents.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="py-24 text-center">
-                        <div className="flex flex-col items-center gap-4 text-slate-600">
-                          <FileText size={48} strokeWidth={1} />
-                          <p className="text-sm font-medium">No records found matching current filters.</p>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : documents.map((doc) => (
-                    <tr key={doc.id} className="hover:bg-white/[0.02] transition-all group">
-                      <td className="px-8 py-6">
-                        <div className="flex flex-col">
-                          <span className="font-bold text-sm tracking-tight">{doc.id}</span>
-                          <span className="text-[11px] font-medium text-slate-500 mt-1">{doc.filename} · {new Date(doc.created_at).toLocaleDateString()}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-6">
-                        <div className="flex justify-center">
-                          <Badge 
-                            type={doc.analysis_result?.classification?.category || 'Unknown'} 
-                          />
-                        </div>
-                      </td>
-                      <td className="px-6 py-6">
-                        <div className="flex justify-center">
-                          <span className={cn(
-                            "font-bold text-sm",
-                            (doc.analysis_result?.classification?.confidence || 1) < 0.6 ? "text-red-500" : "text-slate-300"
-                          )}>
-                            {Math.round((doc.analysis_result?.classification?.confidence || 0) * 100)}%
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-6">
-                        <div className="flex justify-center">
-                          <ValidationBadge 
-                            isValid={doc.analysis_result?.validation?.is_valid} 
-                            errorCount={doc.analysis_result?.validation?.errors?.length || 0}
-                          />
-                        </div>
-                      </td>
-                      <td className="px-8 py-6 text-right">
-                        <button 
-                          onClick={() => setSelectedDoc(doc)}
-                          className="text-xs font-black uppercase tracking-widest text-slate-400 hover:text-white flex items-center gap-2 ml-auto transition-all bg-white/5 px-4 py-2 rounded-xl hover:bg-white/10"
-                        >
-                          View ↗
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          {(activeTab === 'Dashboard' || activeTab === 'Documents' || activeTab === 'Reviews') ? (
+            <div className="bg-[#0f1117] rounded-3xl border border-white/5 overflow-hidden flex flex-col shadow-2xl">
+              <div className="p-6 border-b border-white/5 flex flex-col md:flex-row gap-4 justify-between items-center bg-white/[0.02]">
+                <div className="flex flex-col gap-1">
+                  <h3 className="text-lg font-bold tracking-tight">
+                    {activeTab === 'Dashboard' ? 'Recent Documents' : activeTab}
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    {activeTab === 'Reviews' ? 'Displaying cases with low confidence scores' : 'Managing regulatory data and compliance'}
+                  </p>
+                </div>
+                <div className="relative flex-1 max-w-xl w-full mx-4">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                  <input 
+                    type="text" 
+                    placeholder="Search across all documents..." 
+                    className="w-full pl-12 pr-4 py-2.5 bg-[#0a0c10] border border-white/5 rounded-2xl outline-none focus:ring-2 focus:ring-white/10 transition-all text-sm font-medium"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                </div>
+                <div className="flex gap-3">
+                  <Select value={filterType} onChange={setFilterType} options={['All types', 'Death', 'Disability', 'Hospitalisation', 'Other']} />
+                </div>
+              </div>
 
-            <div className="p-6 border-t border-white/5 bg-white/[0.01] flex justify-between items-center shrink-0">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{documents.length} Records synchronized</p>
-              <div className="flex gap-4">
-                <ActionButton icon={<Download size={16} />} label="Export CSV" />
-                <ActionButton icon={<Copy size={16} />} label="Check duplicates" />
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-white/[0.01] text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500 border-b border-white/5">
+                      <th className="px-8 py-5">Document</th>
+                      <th className="px-6 py-5 text-center">Classification</th>
+                      <th className="px-6 py-5 text-center">Confidence</th>
+                      <th className="px-6 py-5 text-center">Validation</th>
+                      <th className="px-8 py-5 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {loading && documents.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-24 text-center">
+                          <Loader2 className="animate-spin text-white mx-auto mb-4" size={32} />
+                          <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Syncing database...</p>
+                        </td>
+                      </tr>
+                    ) : (
+                      documents
+                        .filter(doc => activeTab !== 'Reviews' || (doc.analysis_result?.classification?.confidence || 1) < 0.6)
+                        .map((doc) => (
+                          <tr key={doc.id} className="hover:bg-white/[0.02] transition-all group">
+                            <td className="px-8 py-6">
+                              <div className="flex flex-col">
+                                <span className="font-bold text-sm tracking-tight">{doc.id}</span>
+                                <span className="text-[11px] font-medium text-slate-500 mt-1">
+                                  {doc.filename} · {new Date(doc.created_at).toLocaleDateString()}
+                                  {duplicateIds.includes(doc.id) && (
+                                    <span className="ml-3 px-2 py-0.5 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded-md text-[8px] uppercase font-black">Duplicate</span>
+                                  )}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-6 py-6 text-center">
+                              <Badge type={doc.analysis_result?.classification?.category || 'Unknown'} />
+                            </td>
+                            <td className="px-6 py-6 text-center">
+                              <span className={cn(
+                                "font-bold text-sm",
+                                (doc.analysis_result?.classification?.confidence || 1) < 0.6 ? "text-red-500" : "text-slate-300"
+                              )}>
+                                {Math.round((doc.analysis_result?.classification?.confidence || 0) * 100)}%
+                              </span>
+                            </td>
+                            <td className="px-6 py-6 text-center">
+                              <ValidationBadge isValid={doc.analysis_result?.validation?.is_valid} errorCount={doc.analysis_result?.validation?.errors?.length || 0} />
+                            </td>
+                            <td className="px-8 py-6 text-right">
+                              <button onClick={() => handleSelectDoc(doc.id)} className="text-xs font-black uppercase tracking-widest text-slate-400 hover:text-white transition-all bg-white/5 px-4 py-2 rounded-xl">View ↗</button>
+                            </td>
+                          </tr>
+                        ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="p-6 border-t border-white/5 bg-white/[0.01] flex justify-between items-center shrink-0">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{documents.length} Records synchronized</p>
+                <div className="flex gap-4">
+                  <ActionButton icon={<Download size={16} />} label="Export CSV" />
+                  <ActionButton 
+                    icon={<Copy size={16} />} 
+                    label="Check duplicates" 
+                    onClick={handleCheckDuplicates}
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center text-center p-20 bg-[#0f1117] rounded-3xl border border-white/5">
+              <Users size={64} className="text-slate-700 mb-6" />
+              <h3 className="text-xl font-bold mb-2">Team Management</h3>
+              <p className="text-slate-500 max-w-md">The team module is currently under maintenance. Only administrators can access this section at this time.</p>
+            </div>
+          )}
         </main>
       </div>
 
@@ -371,12 +369,15 @@ export default function App() {
   );
 }
 
-function NavItem({ icon, label, active, count }) {
+function NavItem({ icon, label, active, count, onClick }) {
   return (
-    <button className={cn(
-      "flex items-center justify-between px-4 py-3.5 rounded-2xl transition-all group relative",
-      active ? "bg-white/[0.05] text-white" : "text-slate-500 hover:bg-white/[0.02] hover:text-slate-300"
-    )}>
+    <button 
+      onClick={onClick}
+      className={cn(
+        "flex items-center justify-between px-4 py-3.5 rounded-2xl transition-all group relative w-full text-left",
+        active ? "bg-white/[0.05] text-white" : "text-slate-500 hover:bg-white/[0.02] hover:text-slate-300"
+      )}
+    >
       <div className="flex items-center gap-3">
         <span className={active ? "text-white" : "text-slate-600 group-hover:text-slate-400 transition-colors"}>
           {icon}
@@ -454,9 +455,12 @@ function Select({ value, onChange, options }) {
   );
 }
 
-function ActionButton({ icon, label }) {
+function ActionButton({ icon, label, onClick }) {
   return (
-    <button className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-white flex items-center gap-2 transition-all bg-white/[0.03] px-4 py-2.5 rounded-xl border border-white/[0.03] hover:border-white/10">
+    <button 
+      onClick={onClick}
+      className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-white flex items-center gap-2 transition-all bg-white/[0.03] px-4 py-2.5 rounded-xl border border-white/[0.03] hover:border-white/10"
+    >
       {icon} {label}
     </button>
   );
@@ -499,7 +503,7 @@ function SummaryItem({ label, value }) {
   return (
     <div className="group">
       <p className="text-[9px] font-black uppercase tracking-[0.2em] text-slate-500 mb-1 group-hover:text-slate-400 transition-colors">{label}</p>
-      <p className="text-sm font-bold text-slate-200">{value || <span className="text-slate-700 italic font-medium">null</span>}</p>
+      <p className="text-sm font-bold text-slate-200">{value || <span className="text-slate-700 italic font-medium">—</span>}</p>
     </div>
   );
 }

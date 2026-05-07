@@ -249,7 +249,7 @@ async def get_minio_files():
         raise HTTPException(status_code=500, detail=f"MinIO error: {str(e)}")
 
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     extension = file.filename.split(".")[-1].lower()
     content = await file.read()
     doc_id = str(uuid.uuid4())
@@ -312,10 +312,13 @@ async def upload_file(file: UploadFile = File(...)):
             storage_key=file.filename,
             meili_id=doc_id,
             missing_fields=missing_fields,
-            token_mapping=token_mapping
+            token_mapping=token_mapping,
+            analysis_status="pending"
         )
         db.add(db_doc)
         db.commit()
+        # Trigger single analysis in background
+        background_tasks.add_task(process_batch_analysis, [doc_id])
     except Exception as e:
         print(f"PostgreSQL Error: {e}")
     finally:
@@ -436,6 +439,27 @@ async def validate_document(doc_id: str):
         print(f"Validation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/duplicates")
+async def get_duplicates():
+    """Find documents with identical filenames."""
+    db = SessionLocal()
+    try:
+        docs = db.query(DocumentMetadata).all()
+        filename_map = {} # filename -> [id1, id2, ...]
+        for d in docs:
+            if d.filename not in filename_map:
+                filename_map[d.filename] = []
+            filename_map[d.filename].append(d.id)
+        
+        duplicate_ids = []
+        for filename, ids in filename_map.items():
+            if len(ids) > 1:
+                duplicate_ids.extend(ids)
+        
+        return {"duplicate_ids": duplicate_ids}
+    finally:
+        db.close()
+
 # ─── Analysis Orchestrator ──────────────────────────────────────────────────
 
 @app.get("/documents/{doc_id}/analyze")
@@ -476,31 +500,55 @@ async def analyze_document(doc_id: str):
         print(f"Analysis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def process_batch_analysis(doc_ids: List[str]):
+def process_batch_analysis(doc_ids: List[str]):
     """Background worker to process a list of documents sequentially without timing out the API."""
+    print(f"[worker] Started for {len(doc_ids)} docs: {doc_ids}")
     db = SessionLocal()
     try:
         for doc_id in doc_ids:
-            # Mark as processing
-            db_doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
-            if not db_doc:
-                continue
-                
-            db_doc.analysis_status = "processing"
-            db.commit()
-            
             try:
-                # Fetch text directly using internal logic instead of HTTP call
-                # to prevent looping HTTP requests
-                doc = meili_client.index(MEILI_INDEX_NAME).get_document(doc_id)
-                text = doc.get("text", "")
+                print(f"[worker] Processing {doc_id}...")
+                # Mark as processing
+                db_doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+                if not db_doc:
+                    print(f"[worker] Doc {doc_id} not found in DB")
+                    continue
+                    
+                db_doc.analysis_status = "processing"
+                db.commit()
+                
+                # Fetch text
+                print(f"[worker] Fetching text for {doc_id}...")
+                text = ""
+                try:
+                    doc = meili_client.index(MEILI_INDEX_NAME).get_document(doc_id)
+                    text = doc.get("text", "")
+                    print(f"[worker] Text fetched from Meili for {doc_id}")
+                except Exception:
+                    print(f"[worker] Meili missing {doc_id}, trying MinIO...")
+                    try:
+                        response = s3_client.get_object(Bucket=MINIO_BUCKET, Key=db_doc.storage_key)
+                        content = response['Body'].read()
+                        extension = db_doc.filename.split(".")[-1].lower()
+                        if extension == "pdf":
+                            text = extract_text_from_pdf(content)
+                        elif extension in ["docx", "doc"]:
+                            text = extract_text_from_docx(content)
+                        text = translate.translate_to_english(text)
+                        text = anonymizer.anonymize(text)
+                        print(f"[worker] Text extracted from MinIO for {doc_id}")
+                    except Exception as s3_err:
+                        print(f"[worker] S3/Extraction error for {doc_id}: {s3_err}")
                 
                 if not text:
-                    raise Exception("No text found in Meilisearch")
+                    raise Exception("No text extracted")
                 
                 # Run pipeline
+                print(f"[worker] Running summarizer for {doc_id}...")
                 summary_result = summarizer.summarize(text)
+                print(f"[worker] Running classifier for {doc_id}...")
                 classification_result = classifier.classify(summary_result)
+                print(f"[worker] Running validator for {doc_id}...")
                 validation_result = validator.validate(summary_result, classification_result)
                 
                 final_result = {
@@ -510,16 +558,19 @@ async def process_batch_analysis(doc_ids: List[str]):
                 }
                 
                 # Save result
+                print(f"[worker] Saving result for {doc_id}...")
                 db_doc.analysis_result = final_result
                 db_doc.analysis_status = "completed"
                 db.commit()
-                print(f"Batch processed: {doc_id}")
+                print(f"[worker] Completed: {doc_id}")
                 
             except Exception as e:
-                print(f"Batch analysis failed for {doc_id}: {e}")
-                db_doc.analysis_status = "failed"
-                db_doc.analysis_result = {"error": str(e)}
-                db.commit()
+                print(f"[worker] Failed for {doc_id}: {e}")
+                db_doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+                if db_doc:
+                    db_doc.analysis_status = "failed"
+                    db_doc.analysis_result = {"error": str(e)}
+                    db.commit()
     finally:
         db.close()
 
