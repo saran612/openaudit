@@ -7,6 +7,10 @@ import docx
 import io
 import boto3
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import meilisearch
 import uuid
 import datetime
@@ -21,9 +25,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from botocore.exceptions import ClientError
-from dotenv import load_dotenv
-
-load_dotenv()
 
 app = FastAPI()
 
@@ -249,9 +250,9 @@ async def get_minio_files():
         raise HTTPException(status_code=500, detail=f"MinIO error: {str(e)}")
 
 @app.post("/upload")
-async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     extension = file.filename.split(".")[-1].lower()
-    content = await file.read()
+    content = file.file.read()
     doc_id = str(uuid.uuid4())
     
     # 1. Upload to MinIO
@@ -295,7 +296,9 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
             "id": doc_id,
             "filename": file.filename,
             "text": text,
-            "extension": extension
+            "extension": extension,
+            "created_at": datetime.datetime.utcnow().isoformat(),
+            "analysis_status": "pending"
         }])
     except Exception as e:
         print(f"Meilisearch Indexing Error: {e}")
@@ -390,7 +393,10 @@ async def get_document_details(doc_id: str):
                     "id": doc_id,
                     "filename": db_doc.filename,
                     "text": text,
-                    "extension": extension
+                    "extension": extension,
+                    "created_at": db_doc.created_at.isoformat() if db_doc.created_at else datetime.datetime.utcnow().isoformat(),
+                    "analysis_result": db_doc.analysis_result,
+                    "analysis_status": db_doc.analysis_status
                 }])
             except Exception as s3_err:
                 print(f"MinIO/Extraction error: {s3_err}")
@@ -403,6 +409,7 @@ async def get_document_details(doc_id: str):
             "missing_fields": db_doc.missing_fields,
             "analysis_status": db_doc.analysis_status,
             "analysis_result": db_doc.analysis_result,
+            "token_mapping": db_doc.token_mapping,
             "created_at": db_doc.created_at
         }
     except HTTPException:
@@ -438,6 +445,65 @@ async def validate_document(doc_id: str):
     except Exception as e:
         print(f"Validation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/documents/{doc_id}")
+async def delete_document(doc_id: str):
+    print(f"Deleting doc_id: {doc_id}")
+    db = SessionLocal()
+    try:
+        db_doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+        if not db_doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # 1. Delete from MinIO
+        try:
+            s3_client.delete_object(Bucket=MINIO_BUCKET, Key=db_doc.storage_key)
+        except Exception as e:
+            print(f"MinIO delete error: {e}")
+
+        # 2. Delete from Meilisearch
+        try:
+            meili_client.index(MEILI_INDEX_NAME).delete_document(doc_id)
+        except Exception as e:
+            print(f"Meilisearch delete error: {e}")
+
+        # 3. Delete from PostgreSQL
+        db.delete(db_doc)
+        db.commit()
+        
+        return {"status": "success", "message": f"Document {doc_id} deleted"}
+    finally:
+        db.close()
+
+@app.patch("/documents/{doc_id}")
+async def rename_document(doc_id: str, request: Request):
+    data = await request.json()
+    new_filename = data.get("filename")
+    if not new_filename:
+        raise HTTPException(status_code=400, detail="New filename is required")
+
+    db = SessionLocal()
+    try:
+        db_doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+        if not db_doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Update DB
+        db_doc.filename = new_filename
+        db.commit()
+
+        # Update Meilisearch
+        try:
+            meili_client.index(MEILI_INDEX_NAME).update_documents([{
+                "id": doc_id,
+                "filename": new_filename
+            }])
+        except Exception as e:
+            print(f"Meilisearch update error: {e}")
+        
+        return {"status": "success", "message": f"Document {doc_id} renamed to {new_filename}"}
+    finally:
+        db.close()
 
 @app.get("/duplicates")
 async def get_duplicates():
@@ -562,6 +628,19 @@ def process_batch_analysis(doc_ids: List[str]):
                 db_doc.analysis_result = final_result
                 db_doc.analysis_status = "completed"
                 db.commit()
+                
+                # Update Meilisearch with result
+                try:
+                    meili_client.index(MEILI_INDEX_NAME).update_documents([{
+                        "id": doc_id,
+                        "analysis_result": final_result,
+                        "analysis_status": "completed",
+                        "created_at": db_doc.created_at.isoformat() if db_doc.created_at else datetime.datetime.utcnow().isoformat()
+                    }])
+                    print(f"[worker] Meilisearch synced for {doc_id}")
+                except Exception as meili_err:
+                    print(f"[worker] Meili sync failed: {meili_err}")
+
                 print(f"[worker] Completed: {doc_id}")
                 
             except Exception as e:
@@ -590,6 +669,43 @@ async def batch_analyze_documents(request: BatchAnalyzeRequest, background_tasks
         "message": f"Successfully queued {len(request.doc_ids)} documents for background analysis.",
         "status": "processing"
     }
+
+@app.post("/documents/sync")
+async def sync_meilisearch(background_tasks: BackgroundTasks):
+    """Sync all PostgreSQL documents to Meilisearch to fix inconsistencies."""
+    background_tasks.add_task(perform_full_sync)
+    return {"status": "success", "message": "Full synchronization started in background"}
+
+def perform_full_sync():
+    print("[sync] Starting full Meilisearch synchronization...")
+    db = SessionLocal()
+    try:
+        # 1. Fetch all docs from DB
+        docs = db.query(DocumentMetadata).all()
+        print(f"[sync] Found {len(docs)} documents in PostgreSQL.")
+
+        meili_docs = []
+        for d in docs:
+            # We use update_documents to merge with existing fields like 'text'
+            meili_docs.append({
+                "id": d.id,
+                "filename": d.filename,
+                "analysis_result": d.analysis_result,
+                "analysis_status": d.analysis_status,
+                "created_at": d.created_at.isoformat() if d.created_at else datetime.datetime.utcnow().isoformat()
+            })
+        
+        if meili_docs:
+            # Using update_documents ensures we don't wipe out the 'text' field
+            # if it already exists in Meilisearch
+            meili_client.index(MEILI_INDEX_NAME).update_documents(meili_docs)
+            print(f"[sync] Re-indexed {len(meili_docs)} documents with analysis results.")
+            
+        print("[sync] Full reset completed.")
+    except Exception as e:
+        print(f"[sync] Failed: {e}")
+    finally:
+        db.close()
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,17 +1,97 @@
 /home/saran/project/search-doc/app.py:32: MovedIn20Warning: The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
   Base = declarative_base()
-INFO:     Started server process [46841]
+INFO:     Started server process [26160]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+/home/saran/project/search-doc/app.py:53: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today_start = datetime.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 Warning: spaCy or en_core_web_sm not installed. Advanced NER masking disabled.
 PostgreSQL: Tables verified/created.
 MinIO: Bucket 'docs' verified.
 Meilisearch: Index 'documents' created.
-Request: POST http://localhost:8000/documents/batch-analyze
+Request: GET http://localhost:8000/stats
+Request: GET http://localhost:8000/search?q=
 Response: 200
-INFO:     127.0.0.1:40896 - "POST /documents/batch-analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42164 - "GET /stats HTTP/1.1" 200 OK
+Response: 200
+INFO:     127.0.0.1:42166 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/stats
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:42166 - "GET /stats HTTP/1.1" 200 OK
+Response: 200
+INFO:     127.0.0.1:42164 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:51652 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/stats
+Response: 200
+INFO:     127.0.0.1:42164 - "GET /stats HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:42166 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/stats
+Response: 200
+INFO:     127.0.0.1:42164 - "GET /stats HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:42166 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:40736 - "GET /search?q= HTTP/1.1" 200 OK
+Request: POST http://localhost:8000/documents/sync
+Response: 200
+INFO:     127.0.0.1:40742 - "POST /documents/sync HTTP/1.1" 200 OK
+[sync] Starting full Meilisearch synchronization...
+[sync] Found 2 documents in PostgreSQL.
+[sync] Re-indexed 2 documents with analysis results.
+[sync] Full reset completed.
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:50934 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/stats
+Response: 200
+INFO:     127.0.0.1:49310 - "GET /stats HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:49320 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/stats
+Response: 200
+INFO:     127.0.0.1:49310 - "GET /stats HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:49320 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/stats
+Response: 200
+INFO:     127.0.0.1:49336 - "GET /stats HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:49340 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/stats
+Response: 200
+INFO:     127.0.0.1:49336 - "GET /stats HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:49340 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/stats
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:49340 - "GET /stats HTTP/1.1" 200 OK
+Response: 200
+INFO:     127.0.0.1:49336 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/stats
+Request: GET http://localhost:8000/search?q=
+Response: 200
+INFO:     127.0.0.1:49342 - "GET /stats HTTP/1.1" 200 OK
+Response: 200
+INFO:     127.0.0.1:49336 - "GET /search?q= HTTP/1.1" 200 OK
+Request: GET http://localhost:8000/documents/2f06747c-c63c-4807-a466-89df7076d9ad
+Fetching details for doc_id: 2f06747c-c63c-4807-a466-89df7076d9ad
+Meilisearch missing doc 2f06747c-c63c-4807-a466-89df7076d9ad. Re-extracting from MinIO...
+Response: 200
+INFO:     127.0.0.1:49336 - "GET /documents/2f06747c-c63c-4807-a466-89df7076d9ad HTTP/1.1" 200 OK
 INFO:     Shutting down
 INFO:     Waiting for application shutdown.
 INFO:     Application shutdown complete.
-INFO:     Finished server process [46841]
+INFO:     Finished server process [26160]

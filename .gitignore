@@ -1,3 +1,7 @@
 venv
 core/__pycache__
+*.log
+__pycache__/.
+
+
 
