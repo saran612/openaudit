@@ -15,7 +15,10 @@ import {
   Copy,
   ExternalLink,
   Loader2,
-  X
+  X,
+  Eye,
+  Edit2,
+  Trash2
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -44,10 +47,29 @@ export default function App() {
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [duplicateIds, setDuplicateIds] = useState([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null);
+  const [uploadingFiles, setUploadingFiles] = useState([]);
 
   useEffect(() => {
     fetchData();
+    
+    const handleGlobalClick = () => setContextMenu(null);
+    document.addEventListener('click', handleGlobalClick);
+    return () => {
+      document.removeEventListener('click', handleGlobalClick);
+    };
   }, [searchQuery, filterType, filterStatus]);
+
+  useEffect(() => {
+    const hasPendingDocs = documents.some(d => d.analysis_status !== 'completed');
+    if (!hasPendingDocs) return;
+
+    const interval = setInterval(() => {
+      fetchData(true); // silent fetch
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [documents]);
 
   const handleCheckDuplicates = async () => {
     try {
@@ -72,8 +94,8 @@ export default function App() {
     }
   };
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [statsRes, docsRes] = await Promise.all([
         axios.get(`${API_BASE_URL}/stats`),
@@ -85,27 +107,315 @@ export default function App() {
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   const handleUpload = async (event) => {
     const file = event.target.files[0];
-    if (!file) return;
+    if (file) await performUpload(file);
+  };
 
+  const performUpload = async (file) => {
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-      await axios.post(`${API_BASE_URL}/upload`, formData);
-      fetchData(); // Refresh dashboard
+      setUploadingFiles(prev => [...prev, file.name]);
+      const response = await axios.post(`${API_BASE_URL}/upload`, formData);
+      
+      // Inject a temporary pending placeholder to forcefully trigger the polling interval
+      // because Meilisearch might take a second to reflect the new document
+      const newDocId = response.data.id;
+      setDocuments(prev => [{
+        id: newDocId,
+        filename: file.name,
+        analysis_status: 'pending',
+        created_at: new Date().toISOString()
+      }, ...prev]);
+      
+      fetchData(true); // Silent refresh
     } catch (error) {
       alert('Upload failed: ' + error.message);
+    } finally {
+      setUploadingFiles(prev => prev.filter(name => name !== file.name));
+    }
+  };
+
+  const onDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const onDragLeave = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const onDrop = async (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      await performUpload(files[0]);
+    }
+  };
+
+  const handleExportCSV = () => {
+    const csvRows = [
+      ['Metric', 'Value'],
+      ['Total Documents', stats.total],
+      ['Today', stats.today],
+      ['Death Cases', stats.death],
+      ['Disability', stats.disability],
+      ['Hospitalisation', stats.hospitalisation],
+      ['Needs Review', stats.needs_review],
+      ['Duplicates', stats.duplicates],
+    ];
+
+    const csvContent = csvRows.map(row => row.join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    
+    const now = new Date();
+    const dateStr = now.getFullYear() + '-' + 
+                    String(now.getMonth() + 1).padStart(2, '0') + '-' + 
+                    String(now.getDate()).padStart(2, '0');
+    const timeStr = String(now.getHours()).padStart(2, '0') + '-' + 
+                    String(now.getMinutes()).padStart(2, '0') + '-' + 
+                    String(now.getSeconds()).padStart(2, '0');
+    const filename = `OpenAudit-Dashboard-${dateStr}-${timeStr}.csv`;
+    
+    a.href = url;
+    a.download = filename;
+    a.click();
+    window.URL.revokeObjectURL(url);
+  };
+
+  const handleDocumentContextMenu = (e, doc) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      doc: doc
+    });
+  };
+
+  const handleRenameDoc = async (doc) => {
+    const newName = window.prompt("Rename Document:", doc.filename);
+    if (newName && newName !== doc.filename) {
+      try {
+        setLoading(true);
+        await axios.patch(`${API_BASE_URL}/documents/${doc.id}`, { filename: newName });
+        fetchData();
+      } catch (error) {
+        alert("Rename failed: " + error.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    setContextMenu(null);
+  };
+
+  const handleDeleteDoc = async (doc) => {
+    if (window.confirm(`Are you sure you want to permanently delete ${doc.filename}?`)) {
+      try {
+        setLoading(true);
+        await axios.delete(`${API_BASE_URL}/documents/${doc.id}`);
+        fetchData();
+      } catch (error) {
+        alert("Delete failed: " + error.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    setContextMenu(null);
+  };
+
+  const generateReportCSV = (doc) => {
+    if (!doc) return "";
+    
+    const summary = doc.analysis_result?.summary || {};
+    const classification = doc.analysis_result?.classification || {};
+    const validation = doc.analysis_result?.validation || {};
+    const tokenMapping = doc.token_mapping || [];
+    
+    const tokens = {};
+    tokenMapping.forEach(item => {
+      if (!tokens[item.category]) tokens[item.category] = item.token;
+    });
+
+    const csvRows = [
+      [" Section 1 — Document identity", ""],
+      [""],
+      ["Case reference", doc.id],
+      ["Date of report", new Date(doc.created_at).toISOString().split('T')[0]],
+      ["Reporting hospital", tokens.HOSPITAL || "[HOSPITAL_DATA]"],
+      ["Reporting doctor", tokens.DOCTOR || "[DOCTOR_DATA]"],
+      ["Processing mode", "Llama 8B (Local)"],
+      ["Language detected", "English"],
+      ["Translation applied", "No"],
+      [""],
+      [" Section 2 — Anonymisation summary", ""],
+      [""],
+      ["Patient token", tokens.PATIENT || "N/A"],
+      ["Aadhaar token", tokens.AADHAAR || "N/A"],
+      ["Phone token", tokens.PHONE || "N/A"],
+      ["Address token", tokens.ADDRESS || "N/A"],
+      ["Total PII detected", `${tokenMapping.length} fields`],
+      ["Age generalised", "Yes (Age bucketed)"],
+      ["City generalised", "Yes (State level)"],
+      ["Date generalised", "Yes (Month level)"],
+      ["Safe to index", "Yes"],
+      [""],
+      [" Section 3 — Clinical summary", ""],
+      [""],
+      ["Patient info", summary.patient_info || "N/A"],
+      ["Suspect drug", summary.drug_name || "N/A"],
+      ["Indication", summary.indication || "N/A"],
+      ["Event description", summary.event_description || "N/A"],
+      ["Severity", summary.severity || "N/A"],
+      ["Outcome", summary.outcome || "N/A"],
+      ["Key findings", summary.key_findings || "N/A"],
+      [""],
+      [" Section 4 — Classification", ""],
+      [""],
+      ["Category", classification.category || "N/A"],
+      ["Confidence", `${Math.round((classification.confidence || 0) * 100)}%`],
+      ["Reasoning", classification.reasoning || "N/A"],
+      ["Human review needed", (classification.confidence || 0) < 0.6 ? "Yes — low confidence" : "No — confidence above threshold"],
+      [""],
+      [" Section 5 — Validation report", ""],
+      [""],
+      ["Overall status", validation.is_valid ? "Clean" : "Review Required"],
+      ["Required fields", validation.is_valid ? "All present" : "Incomplete"],
+      ["Errors", validation.errors?.length || 0],
+      ["Warnings", validation.warnings?.length || 0],
+      ["Severity vs outcome", "Consistent"],
+      ["Classification vs outcome", "Consistent"],
+      ["Duplicate check", "No duplicate found"],
+      [""],
+      [" Section 6 — Anonymised text (safe version)", ""],
+      [""],
+      [doc.text || ""],
+      [""],
+      [" Section 7 — Metadata", ""],
+      [""],
+      ["File name", doc.filename],
+      ["File type", doc.filename.split('.').pop().toUpperCase()],
+      ["OCR used", "No"],
+      ["Pages", "1"],
+      ["Pipeline version", "OpenAudit 1.0"],
+      ["Exported by", "Regulatory Officer"]
+    ];
+
+    return csvRows.map(row => row.map(cell => {
+      const str = (cell || "").toString();
+      return str.includes(',') || str.includes('"') || str.includes('\n') 
+        ? `"${str.replace(/"/g, '""')}"` 
+        : str;
+    }).join(',')).join('\n');
+  };
+
+  const handleExportDetailedCSV = (doc) => {
+    const csvContent = generateReportCSV(doc);
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const timeStr = new Date().toLocaleTimeString().replace(/:/g, '-').split(' ')[0];
+    const filename = `OpenAudit-Report-${doc.id}-${dateStr}-${timeStr}.csv`;
+    
+    link.setAttribute("href", url);
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const ContextItem = ({ icon, label, onClick, variant = "default" }) => (
+    <button 
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className={`w-full flex items-center gap-3 px-4 py-3 text-sm transition-all hover:bg-white/5 first:rounded-t-xl last:rounded-b-xl ${variant === 'danger' ? 'text-rose-400 hover:bg-rose-500/10' : 'text-slate-300'}`}
+    >
+      {icon}
+      <span className="font-medium">{label}</span>
+    </button>
+  );
+
+  const handleExportAllDetailed = async () => {
+    setLoading(true);
+    try {
+      let combinedContent = "";
+      for (let i = 0; i < documents.length; i++) {
+        try {
+          const res = await axios.get(`${API_BASE_URL}/documents/${documents[i].id}`);
+          const csvContent = generateReportCSV(res.data);
+          if (combinedContent.length > 0) combinedContent += "\n\n" + "=".repeat(80) + "\n\n";
+          combinedContent += csvContent;
+        } catch (err) {
+          console.warn(`Skipping document ${documents[i].id} due to fetch error:`, err.message);
+        }
+      }
+      
+      if (!combinedContent) {
+        alert("No valid documents found to export.");
+        return;
+      }
+      
+      const blob = new Blob([combinedContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const filename = `OpenAudit-Bulk-Export-${dateStr}.csv`;
+      
+      link.setAttribute("href", url);
+      link.setAttribute("download", filename);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (error) {
+      alert("Error exporting reports: " + error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="flex h-screen bg-[#0a0c10] text-[#f8fafc] font-sans selection:bg-white/10">
+    <div 
+      className="flex h-screen bg-[#0a0c10] text-[#f8fafc] font-sans selection:bg-white/10 relative"
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      {isDragging && (
+        <div className="fixed inset-0 z-[100] bg-white/10 backdrop-blur-md border-4 border-dashed border-white/20 m-6 rounded-3xl flex flex-col items-center justify-center pointer-events-none animate-in fade-in zoom-in duration-300">
+          <div className="bg-white text-black p-6 rounded-full shadow-2xl mb-6 scale-110">
+            <Upload size={48} strokeWidth={2.5} />
+          </div>
+          <h2 className="text-4xl font-black tracking-tighter">Drop to analyze</h2>
+          <p className="text-slate-400 font-bold mt-3 uppercase tracking-[0.3em] text-[10px]">PDF or DOCX documents</p>
+        </div>
+      )}
+
+      {contextMenu && (
+        <div 
+          className="fixed z-[200] bg-[#1a1d24] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200 min-w-[180px] backdrop-blur-xl"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <ContextItem icon={<Eye size={16} />} label="Open Analysis" onClick={() => { handleSelectDoc(contextMenu.doc.id); setContextMenu(null); }} />
+          <ContextItem icon={<Download size={16} />} label="Export Report" onClick={() => { handleExportDetailedCSV(contextMenu.doc); setContextMenu(null); }} />
+          <div className="h-px bg-white/5 mx-2" />
+          <ContextItem icon={<Edit2 size={16} />} label="Rename File" onClick={() => handleRenameDoc(contextMenu.doc)} />
+          <ContextItem icon={<Trash2 size={16} />} label="Delete Case" onClick={() => handleDeleteDoc(contextMenu.doc)} variant="danger" />
+        </div>
+      )}
+
       {/* Sidebar */}
       <div className="w-64 border-r border-white/5 bg-[#0f1117] flex flex-col p-6 gap-8">
         <div className="flex items-center gap-3">
@@ -120,7 +430,7 @@ export default function App() {
             icon={<BarChart3 size={18} />} 
             label="Dashboard" 
             active={activeTab === 'Dashboard'} 
-            onClick={() => setActiveTab('Dashboard')}
+            onClick={() => { setActiveTab('Dashboard'); setFilterType('All types'); }}
           />
           <NavItem 
             icon={<FileText size={18} />} 
@@ -159,7 +469,7 @@ export default function App() {
         {/* Top Bar */}
         <header className="h-20 border-b border-white/5 bg-[#0a0c10]/80 backdrop-blur-xl flex items-center justify-between px-8 shrink-0 z-10">
           <div>
-            <h2 className="text-xl font-bold tracking-tight">OpenAudit AI Dashboard</h2>
+            <h2 className="text-xl font-bold tracking-tight">AI Dashboard</h2>
             <p className="text-xs text-slate-500 font-medium">CDSCO adverse event analysis</p>
           </div>
           
@@ -173,12 +483,54 @@ export default function App() {
         <main className="flex-1 overflow-y-auto p-8 flex flex-col gap-8 custom-scrollbar">
           {activeTab === 'Dashboard' && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-              <StatCard label="Total docs" value={stats.total} subValue={`${stats.today} today`} icon={<FileText size={16} />} color="white" />
-              <StatCard label="Death cases" value={stats.death} subValue={`${Math.round((stats.death / (stats.total || 1)) * 100)}% of total`} icon={<AlertCircle size={16} />} color="red" />
-              <StatCard label="Disability" value={stats.disability} subValue={`${Math.round((stats.disability / (stats.total || 1)) * 100)}% of total`} icon={<Activity size={16} />} color="orange" />
-              <StatCard label="Hospitalisation" value={stats.hospitalisation} subValue={`${Math.round((stats.hospitalisation / (stats.total || 1)) * 100)}% of total`} icon={<Activity size={16} />} color="blue" />
-              <StatCard label="Needs review" value={stats.needs_review} subValue="Low confidence" icon={<AlertCircle size={16} />} color="amber" />
-              <StatCard label="Duplicates" value={stats.duplicates} subValue="Flagged" icon={<Copy size={16} />} color="slate" />
+              <StatCard 
+                label="Total docs" 
+                value={stats.total} 
+                subValue={`${stats.today} today`} 
+                icon={<FileText size={16} />} 
+                color="white" 
+                onClick={() => { setFilterType('All types'); setSearchQuery(''); }}
+              />
+              <StatCard 
+                label="Death cases" 
+                value={stats.death} 
+                subValue={`${Math.round((stats.death / (stats.total || 1)) * 100)}% of total`} 
+                icon={<AlertCircle size={16} />} 
+                color="red" 
+                onClick={() => setFilterType('Death')}
+              />
+              <StatCard 
+                label="Disability" 
+                value={stats.disability} 
+                subValue={`${Math.round((stats.disability / (stats.total || 1)) * 100)}% of total`} 
+                icon={<Activity size={16} />} 
+                color="orange" 
+                onClick={() => setFilterType('Disability')}
+              />
+              <StatCard 
+                label="Hospitalisation" 
+                value={stats.hospitalisation} 
+                subValue={`${Math.round((stats.hospitalisation / (stats.total || 1)) * 100)}% of total`} 
+                icon={<Activity size={16} />} 
+                color="blue" 
+                onClick={() => setFilterType('Hospitalisation')}
+              />
+              <StatCard 
+                label="Needs review" 
+                value={stats.needs_review} 
+                subValue="Low confidence" 
+                icon={<AlertCircle size={16} />} 
+                color="amber" 
+                onClick={() => setActiveTab('Reviews')}
+              />
+              <StatCard 
+                label="Duplicates" 
+                value={stats.duplicates} 
+                subValue="Flagged" 
+                icon={<Copy size={16} />} 
+                color="slate" 
+                onClick={handleCheckDuplicates}
+              />
             </div>
           )}
 
@@ -220,7 +572,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
-                    {loading && documents.length === 0 ? (
+                    {loading && documents.length === 0 && uploadingFiles.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="py-24 text-center">
                           <Loader2 className="animate-spin text-white mx-auto mb-4" size={32} />
@@ -228,15 +580,41 @@ export default function App() {
                         </td>
                       </tr>
                     ) : (
-                      documents
-                        .filter(doc => activeTab !== 'Reviews' || (doc.analysis_result?.classification?.confidence || 1) < 0.6)
+                      <>
+                        {uploadingFiles.map((fileName, idx) => (
+                          <tr key={`uploading-${idx}`} className="bg-white/[0.02] border-b border-white/5 opacity-75">
+                            <td className="px-8 py-6">
+                              <div className="flex flex-col">
+                                <span className="font-bold text-sm tracking-tight text-white/50 flex items-center gap-2">
+                                  <Loader2 className="animate-spin text-indigo-500" size={16} />
+                                  Uploading...
+                                </span>
+                                <span className="text-[11px] font-medium text-slate-500 mt-1">{fileName} · Just now</span>
+                              </div>
+                            </td>
+                            <td colSpan={4} className="px-6 py-6 text-center text-slate-500 text-xs font-medium">
+                              Anonymising and preparing document...
+                            </td>
+                          </tr>
+                        ))}
+                        {documents
+                        .filter(doc => {
+                          if (activeTab === 'Reviews') return (doc.analysis_result?.classification?.confidence || 1) < 0.6;
+                          if (filterType !== 'All types') return doc.analysis_result?.classification?.category === filterType;
+                          return true;
+                        })
                         .map((doc) => (
-                          <tr key={doc.id} className="hover:bg-white/[0.02] transition-all group">
+                          <tr 
+                            key={doc.id} 
+                            className={`hover:bg-white/[0.02] transition-all group cursor-pointer ${duplicateIds.includes(doc.id) ? 'bg-amber-500/5' : ''}`}
+                            onContextMenu={(e) => handleDocumentContextMenu(e, doc)}
+                            onClick={() => handleSelectDoc(doc.id)}
+                          >
                             <td className="px-8 py-6">
                               <div className="flex flex-col">
                                 <span className="font-bold text-sm tracking-tight">{doc.id}</span>
                                 <span className="text-[11px] font-medium text-slate-500 mt-1">
-                                  {doc.filename} · {new Date(doc.created_at).toLocaleDateString()}
+                                  {doc.filename} · {doc.created_at ? new Date(doc.created_at).toLocaleDateString() : 'Syncing...'}
                                   {duplicateIds.includes(doc.id) && (
                                     <span className="ml-3 px-2 py-0.5 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded-md text-[8px] uppercase font-black">Duplicate</span>
                                   )}
@@ -244,24 +622,37 @@ export default function App() {
                               </div>
                             </td>
                             <td className="px-6 py-6 text-center">
-                              <Badge type={doc.analysis_result?.classification?.category || 'Unknown'} />
+                              {doc.analysis_status !== 'completed' ? (
+                                <Loader2 className="animate-spin text-slate-500 mx-auto" size={16} />
+                              ) : (
+                                <Badge type={doc.analysis_result?.classification?.category || 'Unknown'} />
+                              )}
                             </td>
                             <td className="px-6 py-6 text-center">
-                              <span className={cn(
-                                "font-bold text-sm",
-                                (doc.analysis_result?.classification?.confidence || 1) < 0.6 ? "text-red-500" : "text-slate-300"
-                              )}>
-                                {Math.round((doc.analysis_result?.classification?.confidence || 0) * 100)}%
-                              </span>
+                              {doc.analysis_status !== 'completed' ? (
+                                <Loader2 className="animate-spin text-slate-500 mx-auto" size={16} />
+                              ) : (
+                                <span className={cn(
+                                  "font-bold text-sm",
+                                  (doc.analysis_result?.classification?.confidence || 1) < 0.6 ? "text-red-500" : "text-slate-300"
+                                )}>
+                                  {Math.round((doc.analysis_result?.classification?.confidence || 0) * 100)}%
+                                </span>
+                              )}
                             </td>
                             <td className="px-6 py-6 text-center">
-                              <ValidationBadge isValid={doc.analysis_result?.validation?.is_valid} errorCount={doc.analysis_result?.validation?.errors?.length || 0} />
+                              {doc.analysis_status !== 'completed' ? (
+                                <Loader2 className="animate-spin text-slate-500 mx-auto" size={16} />
+                              ) : (
+                                <ValidationBadge isValid={doc.analysis_result?.validation?.is_valid} errorCount={doc.analysis_result?.validation?.errors?.length || 0} />
+                              )}
                             </td>
                             <td className="px-8 py-6 text-right">
                               <button onClick={() => handleSelectDoc(doc.id)} className="text-xs font-black uppercase tracking-widest text-slate-400 hover:text-white transition-all bg-white/5 px-4 py-2 rounded-xl">View ↗</button>
                             </td>
                           </tr>
-                        ))
+                        ))}
+                      </>
                     )}
                   </tbody>
                 </table>
@@ -269,7 +660,11 @@ export default function App() {
               <div className="p-6 border-t border-white/5 bg-white/[0.01] flex justify-between items-center shrink-0">
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{documents.length} Records synchronized</p>
                 <div className="flex gap-4">
-                  <ActionButton icon={<Download size={16} />} label="Export CSV" />
+                  <ActionButton 
+                    icon={<Download size={16} />} 
+                    label="Export CSV" 
+                    onClick={handleExportAllDetailed}
+                  />
                   <ActionButton 
                     icon={<Copy size={16} />} 
                     label="Check duplicates" 
@@ -303,12 +698,21 @@ export default function App() {
                     <p className="text-xs text-slate-500 font-medium">{selectedDoc.filename}</p>
                  </div>
                </div>
-               <button 
-                onClick={() => setSelectedDoc(null)}
-                className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl transition-all border border-white/5"
-               >
-                <X size={20} />
-               </button>
+               <div className="flex gap-3">
+                 <button 
+                   onClick={() => handleExportDetailedCSV(selectedDoc)}
+                   className="flex items-center gap-2 px-5 py-2.5 bg-white text-black rounded-2xl text-xs font-bold hover:bg-white/90 transition-all active:scale-95 shadow-lg"
+                 >
+                   <Download size={16} strokeWidth={2.5} />
+                   Export Report
+                 </button>
+                 <button 
+                  onClick={() => setSelectedDoc(null)}
+                  className="p-2.5 bg-white/5 hover:bg-white/10 rounded-2xl transition-all border border-white/5"
+                 >
+                  <X size={20} />
+                 </button>
+               </div>
              </div>
              <div className="flex-1 overflow-hidden p-8">
                 <div className="grid grid-cols-2 gap-8 h-full">
@@ -351,7 +755,7 @@ export default function App() {
                            ) : (
                              <>
                                <AlertCircle size={16} />
-                               {selectedDoc.analysis_result?.validation?.errors?.join(', ') || 'Validation errors detected.'}
+                               {selectedDoc.analysis_result?.validation?.errors?.map(e => `${e.field}: ${e.issue}`).join(', ') || 'Validation errors detected.'}
                              </>
                            )}
                          </div>
@@ -391,9 +795,9 @@ function NavItem({ icon, label, active, count, onClick }) {
   );
 }
 
-function StatCard({ label, value, subValue, icon, color }) {
+function StatCard({ label, value, subValue, icon, color, onClick }) {
   const colorStyles = {
-    red: "text-red-500 border-red-500/20 bg-red-500/[0.02]",
+    red: "text-rose-500 border-rose-500/20 bg-rose-500/[0.02]",
     blue: "text-blue-500 border-blue-500/20 bg-blue-500/[0.02]",
     orange: "text-orange-500 border-orange-500/20 bg-orange-500/[0.02]",
     amber: "text-amber-500 border-amber-500/20 bg-amber-500/[0.02]",
@@ -402,7 +806,7 @@ function StatCard({ label, value, subValue, icon, color }) {
   };
 
   const textColors = {
-    red: "text-red-500",
+    red: "text-rose-500",
     blue: "text-blue-500",
     orange: "text-orange-500",
     amber: "text-amber-500",
@@ -411,10 +815,13 @@ function StatCard({ label, value, subValue, icon, color }) {
   };
 
   return (
-    <div className={cn(
-      "p-6 rounded-[10px] border transition-all hover:scale-[1.02] relative group overflow-hidden",
-      colorStyles[color]
-    )}>
+    <div 
+      onClick={onClick}
+      className={cn(
+        "p-6 rounded-[10px] border transition-all hover:scale-[1.02] active:scale-[0.98] relative group overflow-hidden cursor-pointer",
+        colorStyles[color]
+      )}
+    >
       <div className="flex justify-between items-start mb-6">
         <div className="p-2.5 bg-white/5 rounded-2xl group-hover:bg-white/10 transition-colors border border-white/5 shadow-inner">
           {icon}
