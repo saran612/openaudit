@@ -10,25 +10,51 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL   = os.getenv("LLM_MODEL",   "llama3-8b-8192")
 
 SUMMARY_FIELDS = [
-    "patient_info", "drug_name", "event_description",
-    "severity", "outcome", "key_findings"
+    "case_reference", "patient_info", "drug_name", "indication",
+    "event_description", "severity", "outcome", "key_findings"
 ]
 
 
 def _llm_summarize(text: str) -> dict:
     """Call an OpenAI-compatible LLM to extract summary fields."""
-    prompt = f"""You are a regulatory document summarizer for CDSCO adverse event reports.
+    prompt = f"""You are a clinical information extractor for CDSCO adverse event 
+reports. Extract structured fields from the anonymised document below.
 
-Extract ONLY what is explicitly stated. If a field is absent, use null — do NOT infer or hallucinate.
+RULES:
+- Extract ONLY what is explicitly stated in the document
+- Use null if a field is genuinely absent — do NOT infer or guess
+- patient_info must be a single clean entry — one patient only,
+  using their anonymised token + age bucket + gender
+  e.g. "[PATIENT_GYXL], Male, 46-60"
+  Do NOT list multiple tokens or copy garbled text
+- case_reference must be extracted from the document itself
+  (e.g. "CDSCO-AE-1882") — do NOT use system-generated IDs
+- event_description must be 2-3 clean clinical sentences
+  describing what happened medically — not a copy of the raw text
+- key_findings must be complete clinical terms only
+  (e.g. "anaphylaxis, cyanosis, failed intubation, cardiac arrest")
+  Do NOT include partial words, sentence fragments, or cut-off text
+- indication is WHY the drug was prescribed
+  (e.g. "chronic hypertension") — look for phrases like
+  "prescribed for", "treatment of", "indicated for"
+- severity must be one of: 
+  Mild / Moderate / Severe / Life-threatening / Fatal
+- outcome must be one of:
+  Recovered / Recovering / Not Recovered / Fatal / Unknown
 
-Return ONLY valid JSON in this exact shape:
+---
+
+Return ONLY valid JSON, no markdown, no preamble:
+
 {{
-  "patient_info": "<age/sex/weight if present, else null>",
-  "drug_name": "<suspect drug name + dose if mentioned>",
-  "event_description": "<concise clinical description of the adverse event>",
-  "severity": "<Mild | Moderate | Severe | Life-threatening | Fatal>",
-  "outcome": "<Recovered | Recovering | Not Recovered | Fatal | Unknown>",
-  "key_findings": "<lab values, diagnoses, or clinical notes relevant to regulatory review>"
+  "case_reference": "<from document, e.g. CDSCO-AE-1882>",
+  "patient_info": "<single token + gender + age bucket>",
+  "drug_name": "<name + dosage + frequency>",
+  "indication": "<why the drug was prescribed>",
+  "event_description": "<2-3 clean clinical sentences>",
+  "severity": "<Mild|Moderate|Severe|Life-threatening|Fatal>",
+  "outcome": "<Recovered|Recovering|Not Recovered|Fatal|Unknown>",
+  "key_findings": "<comma separated complete clinical terms only>"
 }}
 
 Document:
@@ -45,7 +71,7 @@ Document:
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.1
     }
-    response = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=30)
+    response = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=120)
     response.raise_for_status()
 
     raw = response.json()["choices"][0]["message"]["content"]
@@ -79,9 +105,9 @@ def _rule_based_summarize(text: str) -> dict:
             m = re.search(p, text, flags)
             if m:
                 try:
-                    return m.group(1).strip()
+                    return m.group(1).strip().replace('\n', ' ')
                 except IndexError:
-                    return m.group(0).strip()
+                    return m.group(0).strip().replace('\n', ' ')
         return None
 
     # Patient info (extract generalized age and token)
@@ -99,8 +125,8 @@ def _rule_based_summarize(text: str) -> dict:
     # Drug name
     drug_name = find_first([
         r"(?:drug|medicine|medication|suspect\s*drug)\s*[:\-]\s*([^\n,;\.]+)",
-        r"(?:prescribed|taking|started\s*on|given|dose\s*of)\s+([A-Z][a-zA-Z0-9\-]+(?:\s+\d+(?:mg|g|ml|mcg))?)",
-        r"(?:tablet|capsule|injection|syrup)\s+(?:of\s+)?([A-Za-z0-9]+)"
+        r"(?:prescribed|taking|started\s*on|given|dose\s*of)(?:\s+(?:a|an|the|course\s*of|daily|dose\s*of|tablet\s*of|capsule\s*of|injection\s*of))*\s+([A-Z][a-zA-Z0-9\-]+(?:\s+\d+(?:mg|g|ml|mcg))?)",
+        r"(?:tablet|capsule|injection|syrup)\s+(?:of\s+)?([A-Za-z0-9]+(?:\s+\d+(?:mg|g|ml|mcg))?)"
     ])
     if drug_name and drug_name.lower() in ["of", "for", "the", "a", "in", "and", "is"]:
         drug_name = None
@@ -132,15 +158,28 @@ def _rule_based_summarize(text: str) -> dict:
     # Key Findings - Collect ALL matching findings
     findings_list = find_all([
         r"(?:lab(?:oratory)?|diagnosis|diagnose[sd]|key\s*findings?|findings?)[:\-]?\s*([^\n\.]+)",
-        r"(?:state\s*of|presented\s*with|signs\s*of|symptoms\s*of|diagnosed\s*with|history\s*of|secondary\s*to)\s+([a-zA-Z\s\-]{3,50})(?:\.|,|and|with|\n)",
-        r"\b(cyanosis|cyanotic|anaphylaxis|anaphylactic|arrest|hypotension|hypertension|respiratory\s*distress|tachycardia|bradycardia|seizure|rash|unconscious|unresponsive)\b",
+        r"(?:state\s*of|presented\s*with|signs\s*of|symptoms\s*of|diagnosed\s*with|history\s*of|secondary\s*to|developed|complained\s*of|suffering\s*from)\s+([a-zA-Z\s\-]{3,50})(?:\.|,|and|with|\n|\()",
+        r"\b(cyanosis|cyanotic|anaphylaxis|anaphylactic|arrest|hypotension|hypertension|respiratory\s*distress|tachycardia|bradycardia|seizure|rash|unconscious|unresponsive|fever|pain|infection|vomiting|nausea|dizziness|bleeding)\b",
         r"(?:blood\s*pressure|BP|heart\s*rate|HR|SpO2|oxygen|ECG|temperature)\s*(?:was|is|showed|measured|at)?\s*([^\n\.,;]+)"
     ])
+    # De-duplicate
+    findings_list = list(set(f.strip().lower() for f in findings_list if f and len(f) > 3))
     key_findings = ", ".join(findings_list) if findings_list else None
 
+    # Case Reference
+    case_ref = find_first([r"\b(CDSCO-AE-\d+)\b", r"Case\s*Ref(?:erence)?\s*[:\-]?\s*(\w+-\w+-\d+)"])
+
+    # Indication
+    indication = find_first([
+        r"(?:indication|prescribed\s+for|treatment\s+of|indicated\s+for)\s*[:\-]?\s*([^\n\.,;]+)",
+        r"known\s+case\s+of\s+([^\n\.,;]+)"
+    ])
+
     return {
+        "case_reference":    case_ref,
         "patient_info":      patient_info,
         "drug_name":         drug_name,
+        "indication":        indication,
         "event_description": narrative,
         "severity":          severity,
         "outcome":           outcome,
@@ -156,7 +195,19 @@ def summarize(text: str) -> dict:
     """
     if LLM_API_URL and LLM_API_KEY:
         try:
-            return _llm_summarize(text)
+            llm_result = _llm_summarize(text)
+            
+            # Check if ANY important field is missing from the LLM extraction
+            missing_any = any(not llm_result.get(k) for k in SUMMARY_FIELDS)
+            
+            if missing_any:
+                print("[summarizer] LLM missed some fields, merging with rule-based fallback.")
+                rb_result = _rule_based_summarize(text)
+                for k in SUMMARY_FIELDS:
+                    if not llm_result.get(k) and rb_result.get(k):
+                        llm_result[k] = rb_result[k]
+                        
+            return llm_result
         except Exception as e:
             print(f"[summarizer] LLM call failed ({e}), falling back to rule-based.")
 

@@ -2,6 +2,8 @@ import re
 import random
 import string
 import json
+import requests
+import os
 
 try:
     import spacy
@@ -9,6 +11,11 @@ try:
 except (ImportError, OSError):
     nlp = None
     print("Warning: spaCy or en_core_web_sm not installed. Advanced NER masking disabled.")
+
+# ─── Optional LLM Config (shared with summarizer.py) ────────────────────────
+LLM_API_URL = os.getenv("LLM_API_URL", "")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_MODEL   = os.getenv("LLM_MODEL",   "llama3-8b-8192")
 
 # Configuration for Generalization
 METRO_CITIES = ["Mumbai", "Delhi", "Bangalore", "Bengaluru", "Chennai", "Kolkata", "Hyderabad"]
@@ -45,7 +52,240 @@ class AnonymizerEngine:
             })
         return self.token_mapping[key]
 
+        return self.token_mapping[key]
+
+    def _llm_anonymize(self, text: str) -> dict:
+        """High-accuracy LLM-based anonymisation using the system prompt."""
+        prompt = f"""You are a precise medical document anonymisation engine compliant 
+with DPDP Act 2023, NDHM, ICMR, and CDSCO guidelines.
+
+Your job is to detect and replace ONLY real PII/PHI entities.
+You must be conservative — when in doubt, DO NOT mask.
+
+---
+
+## WHAT TO MASK
+
+PATIENT names (full names of patients only):
+→ [PATIENT_XXXX]
+
+DOCTOR names (any name preceded by Dr. / Doctor, including 
+abbreviated names like "Dr. S. K. Nair", "Dr. A. B. Roy"):
+→ [DOCTOR_XXXX]
+Special rule: always treat "Dr." or "Doctor" followed by ANY
+combination of initials and/or a surname as a doctor name.
+Example: "Dr. S. K. Nair" → [DOCTOR_XXXX]
+Example: "Dr. Ananya Rao" → [DOCTOR_XXXX]
+
+HOSPITAL names (only when a specific NAMED hospital or clinic 
+is mentioned as a proper noun):
+→ [HOSPITAL_XXXX]
+Example: "City General Hospital" → [HOSPITAL_XXXX]
+Example: "Apollo Specialty Center" → [HOSPITAL_XXXX]
+
+AADHAAR numbers (12-digit number with or without spaces):
+→ [AADHAAR_XXXX]
+
+PHONE numbers (Indian 10-digit mobile or landline):
+→ [PHONE_XXXX]
+
+EMAIL addresses:
+→ [EMAIL_XXXX]
+
+PERSONAL ADDRESSES (flat/house number + street + area/sector):
+→ [ADDRESS_XXXX]
+
+CASE REFERENCE numbers (e.g. CDSCO-AE-1882):
+→ [CASEREF_XXXX]
+
+---
+
+## WHAT TO NEVER MASK
+
+Strictly DO NOT mask any of the following even if capitalised:
+
+Document section titles:
+- "Case Summary Report", "Incident Log", "Ward Report",
+  "Adverse Event Report", "AEFI Report", anything that is
+  a document heading or section label
+
+Department and location words used generically:
+- "Emergency Dept", "ER", "ICU", "Ward B", "OPD",
+  "the hospital", "the ward", "the clinic", "the ER"
+  (only mask if it is a NAMED hospital like "City General Hospital")
+
+Job titles and designations (never PII):
+- "Senior Consultant", "Junior Doctor", "Duty Doctor",
+  "Nurse", "Ward Sister", "Pharmacist", "Consultant",
+  "Duty Officer", "Reported by", "Doctor on call"
+
+Medical and clinical terms:
+- Drug names, dosages, frequencies
+- Symptoms, diagnoses, procedures
+- Lab values, test results
+
+General words that happen to be capitalised:
+- "Case", "Summary", "Report", "Subject", "Patient"
+  used as common nouns or section headings
+
+City names used in general context (not part of a personal 
+address): e.g. "Gurgaon" alone in a sentence is fine to keep,
+only mask if it is part of a full personal address
+
+---
+
+## TOKEN FORMAT RULES
+
+- Format: [TYPE_XXXX] where XXXX = 4 random uppercase 
+  alphanumeric characters
+- Same entity appearing multiple times = same token every time
+- Different entities of same type = different tokens
+- Never break a sentence grammatically with a token insertion
+- Never create a token for something that is not a real entity
+
+---
+
+## STEP 2 — GENERALISATION
+
+After masking, generalise these quasi-identifiers:
+
+Age:
+- 0-17   → "Minor (under 18)"
+- 18-30  → "18-30"
+- 31-45  → "31-45"
+- 46-60  → "46-60"
+- 61+    → "Senior (60+)"
+
+City (ONLY when part of a masked personal address):
+- Metro cities → keep city name
+- Tier-2 cities → state name only
+
+Dates:
+- Specific dates (2024-05-20, Oct 10th) → "Month Year" only
+- Times of day (7:00 PM, 8:15 PM) → KEEP exactly as-is
+- Day names ("Tuesday", "Monday") → remove
+
+---
+
+## OUTPUT FORMAT
+
+Return ONLY valid JSON. No markdown. No preamble. No explanation.
+
+{{
+  "anonymised_text": "<full document with replacements applied>",
+
+  "token_mapping": [
+    {{
+      "token": "[PATIENT_WWOR]",
+      "original": "Amit Mehra",
+      "category": "PATIENT_NAME"
+    }},
+    {{
+      "token": "[DOCTOR_N8K2]",
+      "original": "Dr. S. K. Nair",
+      "category": "DOCTOR_NAME"
+    }},
+    {{
+      "token": "[HOSPITAL_IVN7]",
+      "original": "City General Hospital",
+      "category": "HOSPITAL_NAME"
+    }}
+  ],
+
+  "generalisation_log": [
+    {{
+      "field": "age",
+      "original": "54",
+      "generalised": "46-60"
+    }},
+    {{
+      "field": "city",
+      "original": "Gurgaon",
+      "generalised": "Haryana"
+    }},
+    {{
+      "field": "date",
+      "original": "2024-05-20",
+      "generalised": "May 2024"
+    }}
+  ],
+
+  "pii_summary": {{
+    "total_pii_detected": 6,
+    "categories_found": [
+      "PATIENT_NAME",
+      "DOCTOR_NAME",
+      "HOSPITAL_NAME",
+      "AADHAAR",
+      "PHONE",
+      "ADDRESS"
+    ],
+    "safe_to_index": true
+  }}
+}}
+
+---
+
+## SELF CHECK BEFORE OUTPUT
+
+Before returning, verify each of these:
+
+[ ] Is "Dr. S. K. Nair" or any "Dr." name masked as [DOCTOR_XXXX]?
+[ ] Is "Case Summary Report" left unmasked?
+[ ] Is "Emergency Dept" left unmasked?
+[ ] Is "Senior Consultant" left unmasked?
+[ ] Is "the hospital" (generic) left unmasked?
+[ ] Is only the NAMED hospital (e.g. City General Hospital) masked?
+[ ] Are drug names completely untouched?
+[ ] Does every sentence still read grammatically after masking?
+[ ] Are times of day (7:00 PM, 8:15 PM) preserved exactly?
+
+If any check fails, fix it before returning.
+
+---
+
+Document to anonymise:
+
+\"\"\"
+{text}
+\"\"\"
+"""
+        headers = {
+            "Authorization": f"Bearer {LLM_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": LLM_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.0
+        }
+        
+        try:
+            import requests
+            import re
+            response = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=120)
+            response.raise_for_status()
+            raw = response.json()["choices"][0]["message"]["content"]
+            raw = re.sub(r"```(?:json)?", "", raw).strip()
+            result = json.loads(raw)
+            
+            # Map LLM format to our engine format
+            return {
+                "step1_pseudonymised_text": result.get("anonymised_text", ""),
+                "token_mapping": result.get("token_mapping", []),
+                "step2_anonymised_text": result.get("anonymised_text", ""),
+                "generalisation_log": result.get("generalisation_log", []),
+                "pii_summary": result.get("pii_summary", {"total_pii_detected": 0})
+            }
+        except Exception as e:
+            print(f"[anonymizer] LLM fallback failed: {e}")
+            return self._rule_based_process(text)
+
     def process(self, text):
+        # Always use rule-based to prevent 120s timeouts from massive prompts
+        return self._rule_based_process(text)
+
+    def _rule_based_process(self, text):
         if not text:
             return {
                 "step1_pseudonymised_text": "",

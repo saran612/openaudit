@@ -42,7 +42,7 @@ Case Summary:
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.0
     }
-    response = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=30)
+    response = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=120)
     response.raise_for_status()
 
     raw = response.json()["choices"][0]["message"]["content"]
